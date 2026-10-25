@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 # Load credentials securely from .streamlit/secrets.toml
-USER_CREDENTIALS = st.secrets["passwords"]
+USER_CREDENTIALS = st.secrets["password"]
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -50,10 +50,12 @@ def login():
         submit = st.form_submit_button("Sign In")
 
         if submit:
+            # Strip spaces just in case of accidental auto-correct spacing
             clean_user = username.strip()
             clean_pass = password.strip()
 
-            if clean_user in USER_CREDENTIALS and USER_CREDENTIALS[clean_user] == clean_pass:
+            # Directly check against your st.secrets keys
+            if clean_user == st.secrets["username"] and clean_pass == st.secrets["password"]:
                 st.session_state["authenticated"] = True
                 st.session_state["username"] = clean_user
                 st.rerun()
