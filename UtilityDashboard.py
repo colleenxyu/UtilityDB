@@ -1,4 +1,5 @@
 import io
+import os
 import base64
 import docx
 import streamlit as st
@@ -21,8 +22,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Load credentials securely from .streamlit/secrets.toml
+USER_CREDENTIALS = st.secrets["passwords"]
+
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
+
 
 def login():
     # Hide the sidebar completely when on the login screen
@@ -48,38 +53,51 @@ def login():
             clean_user = username.strip()
             clean_pass = password.strip()
 
-            if clean_user == st.secrets["username"] and clean_pass == st.secrets["password"]:
+            if clean_user in USER_CREDENTIALS and USER_CREDENTIALS[clean_user] == clean_pass:
                 st.session_state["authenticated"] = True
                 st.session_state["username"] = clean_user
                 st.rerun()
             else:
                 st.error("Invalid Username or Password")
 
+
 if not st.session_state["authenticated"]:
     login()
     st.stop()
 
+# -----------------------------------------------------------------------------
+# 2. INITIALIZE SESSION STATE WITH PERSISTENT CSV STORAGE
+# -----------------------------------------------------------------------------
+ELEC_FILE = "elec_history.csv"
+WATER_FILE = "water_history.csv"
+SOLAR_FILE = "solar_history.csv"
 
-# -----------------------------------------------------------------------------
-# 2. INITIALIZE SESSION STATE FOR ACCUMULATED DATAFRAMES
-# -----------------------------------------------------------------------------
 if "elec_history" not in st.session_state:
-    st.session_state["elec_history"] = pd.DataFrame(columns=[
-        "billing_period", "due_date", "total_amt_due", "actual_consumption",
-        "effective_rate", "average_daily_consumption", "average_daily_cost", "average_temperature"
-    ])
+    if os.path.exists(ELEC_FILE):
+        st.session_state["elec_history"] = pd.read_csv(ELEC_FILE)
+    else:
+        st.session_state["elec_history"] = pd.DataFrame(columns=[
+            "billing_period", "due_date", "total_amt_due", "actual_consumption",
+            "effective_rate", "average_daily_consumption", "average_daily_cost", "average_temperature"
+        ])
 
 if "water_history" not in st.session_state:
-    st.session_state["water_history"] = pd.DataFrame(columns=[
-        "billing_period", "due_date", "total_amount_due", "actual_consumption", "effective_blended_rate"
-    ])
+    if os.path.exists(WATER_FILE):
+        st.session_state["water_history"] = pd.read_csv(WATER_FILE)
+    else:
+        st.session_state["water_history"] = pd.DataFrame(columns=[
+            "billing_period", "due_date", "total_amount_due", "actual_consumption", "effective_blended_rate"
+        ])
 
 if "solar_history" not in st.session_state:
-    st.session_state["solar_history"] = pd.DataFrame(columns=[
-        "timestamp", "daily_solar_production", "estimated_income",
-        "cum_energy_month", "cum_energy_year", "cum_energy_lifetime",
-        "cum_financial_month", "cum_financial_year", "cum_financial_lifetime"
-    ])
+    if os.path.exists(SOLAR_FILE):
+        st.session_state["solar_history"] = pd.read_csv(SOLAR_FILE)
+    else:
+        st.session_state["solar_history"] = pd.DataFrame(columns=[
+            "timestamp", "daily_solar_production", "estimated_income",
+            "cum_energy_month", "cum_energy_year", "cum_energy_lifetime",
+            "cum_financial_month", "cum_financial_year", "cum_financial_lifetime"
+        ])
 
 # -----------------------------------------------------------------------------
 # 3. SIDEBAR NAVIGATION & USER SESSION
@@ -139,7 +157,7 @@ class WaterMetrics(BaseModel):
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def get_llm():
-    return ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
 
 llm = get_llm()
@@ -273,6 +291,8 @@ if page == "💡 Electricity Agent":
             new_row_df = pd.DataFrame([data_dict])
             st.session_state["elec_history"] = pd.concat([st.session_state["elec_history"], new_row_df],
                                                          ignore_index=True)
+            # Save persistently to CSV
+            st.session_state["elec_history"].to_csv(ELEC_FILE, index=False)
 
             st.success("Extraction Complete & Added to Master History!")
             col1, col2 = st.columns([1, 1])
@@ -306,6 +326,8 @@ elif page == "☀️ Solar Agent":
             new_row_df = pd.DataFrame([data_dict])
             st.session_state["solar_history"] = pd.concat([st.session_state["solar_history"], new_row_df],
                                                           ignore_index=True)
+            # Save persistently to CSV
+            st.session_state["solar_history"].to_csv(SOLAR_FILE, index=False)
 
             st.success("Extraction Complete & Added to Master History!")
             col1, col2 = st.columns([1, 1])
@@ -339,6 +361,8 @@ elif page == "💧 Water Agent":
             new_row_df = pd.DataFrame([data_dict])
             st.session_state["water_history"] = pd.concat([st.session_state["water_history"], new_row_df],
                                                           ignore_index=True)
+            # Save persistently to CSV
+            st.session_state["water_history"].to_csv(WATER_FILE, index=False)
 
             st.success("Extraction Complete & Added to Master History!")
             col1, col2 = st.columns([1, 1])
@@ -381,6 +405,11 @@ elif page == "📊 Combined Dashboard":
             st.session_state["elec_history"] = st.session_state["elec_history"].iloc[0:0]
             st.session_state["water_history"] = st.session_state["water_history"].iloc[0:0]
             st.session_state["solar_history"] = st.session_state["solar_history"].iloc[0:0]
+
+            # Delete stored CSV files
+            for f in [ELEC_FILE, WATER_FILE, SOLAR_FILE]:
+                if os.path.exists(f):
+                    os.remove(f)
             st.rerun()
 
     st.markdown("---")
