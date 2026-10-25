@@ -1,5 +1,10 @@
-import streamlit as st
+import io
 import base64
+import docx
+import streamlit as st
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
 import pandas as pd
 import plotly.graph_objects as go
 from pydantic import BaseModel, Field
@@ -12,13 +17,26 @@ from langchain_core.prompts import ChatPromptTemplate
 st.set_page_config(
     page_title="Utility Monitoring Dashboard",
     page_icon="⚡",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
 def login():
+    # Hide the sidebar completely when on the login screen
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebar"] {
+                display: none;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("🔒 Utility Dashboard Login")
 
     with st.form("login_form"):
@@ -27,11 +45,9 @@ def login():
         submit = st.form_submit_button("Sign In")
 
         if submit:
-            # Strip spaces just in case of accidental auto-correct spacing
             clean_user = username.strip()
             clean_pass = password.strip()
 
-            # Directly check against your st.secrets keys
             if clean_user == st.secrets["username"] and clean_pass == st.secrets["password"]:
                 st.session_state["authenticated"] = True
                 st.session_state["username"] = clean_user
@@ -42,7 +58,6 @@ def login():
 if not st.session_state["authenticated"]:
     login()
     st.stop()
-
 
 
 # -----------------------------------------------------------------------------
@@ -124,7 +139,7 @@ class WaterMetrics(BaseModel):
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def get_llm():
-    return ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
 
 llm = get_llm()
@@ -173,6 +188,69 @@ def parse_water(file_bytes, mime_type):
     return (prompt | structured_llm).invoke({})
 
 
+def generate_docx_report(elec_df, water_df, solar_df):
+    """Generates a styled Word document (.docx) containing accumulated utility metrics."""
+    doc = docx.Document()
+
+    sections = doc.sections
+    for section in sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+
+    title = doc.add_heading('Utility Monitoring & Performance Report', level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    sub = doc.add_paragraph(f"Generated on: {pd.Timestamp.now().strftime('%B %d, %Y - %I:%M %p')}")
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub.runs[0].font.italic = True
+    sub.runs[0].font.color.rgb = RGBColor(128, 128, 128)
+
+    doc.add_paragraph().paragraph_format.space_after = Pt(12)
+
+    def add_df_table(heading_text, df):
+        doc.add_heading(heading_text, level=1)
+        if df.empty:
+            p = doc.add_paragraph("No data recorded for this section.")
+            p.runs[0].font.italic = True
+            doc.add_paragraph()
+            return
+
+        table = doc.add_table(rows=df.shape[0] + 1, cols=df.shape[1])
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.style = 'Table Grid'
+
+        hdr_cells = table.rows[0].cells
+        for col_idx, col_name in enumerate(df.columns):
+            hdr_cells[col_idx].text = str(col_name).replace("_", " ").title()
+            p = hdr_cells[col_idx].paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in p.runs:
+                run.font.bold = True
+                run.font.size = Pt(10)
+
+        for row_idx, row in df.iterrows():
+            row_cells = table.rows[row_idx + 1].cells
+            for col_idx, val in enumerate(row):
+                row_cells[col_idx].text = str(val) if pd.notna(val) else "N/A"
+                p = row_cells[col_idx].paragraphs[0]
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                for run in p.runs:
+                    run.font.size = Pt(9.5)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(12)
+
+    add_df_table("💡 Electricity Statements (Meralco)", elec_df)
+    add_df_table("💧 Water Statements (Maynilad)", water_df)
+    add_df_table("☀️ Solar Production Logs", solar_df)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
 # -----------------------------------------------------------------------------
 # 6. PAGE ROUTING & LAYOUTS
 # -----------------------------------------------------------------------------
@@ -192,7 +270,6 @@ if page == "💡 Electricity Agent":
 
             data_dict = result.model_dump()
 
-            # Append to master session state history dataframe
             new_row_df = pd.DataFrame([data_dict])
             st.session_state["elec_history"] = pd.concat([st.session_state["elec_history"], new_row_df],
                                                          ignore_index=True)
@@ -226,7 +303,6 @@ elif page == "☀️ Solar Agent":
 
             data_dict = result.model_dump()
 
-            # Append to master session state history dataframe
             new_row_df = pd.DataFrame([data_dict])
             st.session_state["solar_history"] = pd.concat([st.session_state["solar_history"], new_row_df],
                                                           ignore_index=True)
@@ -260,7 +336,6 @@ elif page == "💧 Water Agent":
 
             data_dict = result.model_dump()
 
-            # Append to master session state history dataframe
             new_row_df = pd.DataFrame([data_dict])
             st.session_state["water_history"] = pd.concat([st.session_state["water_history"], new_row_df],
                                                           ignore_index=True)
@@ -283,12 +358,30 @@ elif page == "📊 Combined Dashboard":
     st.title("📊 Master Utility Dashboard & History")
     st.write("Here is the accumulated historical database of all your uploaded utility statements and solar reports.")
 
-    # Clear history button option
-    if st.button("Clear All Stored History"):
-        st.session_state["elec_history"] = st.session_state["elec_history"].iloc[0:0]
-        st.session_state["water_history"] = st.session_state["water_history"].iloc[0:0]
-        st.session_state["solar_history"] = st.session_state["solar_history"].iloc[0:0]
-        st.rerun()
+    # Action buttons layout for exporting and clearing history
+    col_btn1, col_btn2 = st.columns([1, 1])
+
+    with col_btn1:
+        docx_file = generate_docx_report(
+            st.session_state["elec_history"],
+            st.session_state["water_history"],
+            st.session_state["solar_history"]
+        )
+
+        st.download_button(
+            label="📄 Export Report to Word (.docx)",
+            data=docx_file,
+            file_name=f"Utility_Report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
+
+    with col_btn2:
+        if st.button("🗑️ Clear All Stored History", use_container_width=True):
+            st.session_state["elec_history"] = st.session_state["elec_history"].iloc[0:0]
+            st.session_state["water_history"] = st.session_state["water_history"].iloc[0:0]
+            st.session_state["solar_history"] = st.session_state["solar_history"].iloc[0:0]
+            st.rerun()
 
     st.markdown("---")
 
